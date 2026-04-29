@@ -1,40 +1,50 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter } from 'next/navigation'
 import { Database } from '@/types/database.types'
 
 type Task = Database['public']['Tables']['tasks']['Row']
 
+type Notification = {
+  id: string
+  title: string
+  message: string
+  timestamp: Date
+  read: boolean
+  taskId: string
+}
+
 export default function DashboardPage() {
   const [tasks, setTasks] = useState<Task[]>([])
   const [loading, setLoading] = useState(true)
   const [showAddModal, setShowAddModal] = useState(false)
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [notifications, setNotifications] = useState<Notification[]>([])
   const [newTask, setNewTask] = useState({
     title: '',
     subject: '',
     description: '',
     deadline: '',
   })
-  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default')
+  
+  // 通知済みの課題IDを記録
+  const notifiedTasksRef = useRef<Set<string>>(new Set())
   
   const router = useRouter()
   const supabase = createClient()
 
   useEffect(() => {
     fetchTasks()
-    
-    // 通知権限の状態を確認
-    if ('Notification' in window) {
-      setNotificationPermission(Notification.permission)
-    }
   }, [])
 
-  // 締切チェックと通知（1分ごと）
+  // 締切チェックと通知（10秒ごと）
   useEffect(() => {
     const checkDeadlines = () => {
       const now = new Date()
+      
+      console.log('=== 締切チェック開始 ===')
       
       tasks.forEach(task => {
         if (task.completed) return
@@ -42,53 +52,82 @@ export default function DashboardPage() {
         const deadline = new Date(task.deadline)
         const diffHours = (deadline.getTime() - now.getTime()) / (1000 * 60 * 60)
         
+        // すでに通知済みかチェック
+        const notificationKey = `${task.id}-warning`
+        
         // 24時間以内、かつまだ期限切れではない
         if (diffHours > 0 && diffHours <= 24) {
-          sendNotification(
-            '締切が近づいています！',
-            `【${task.subject || '課題'}】${task.title} - 残り${Math.floor(diffHours)}時間`
-          )
+          if (!notifiedTasksRef.current.has(notificationKey)) {
+            console.log('✅ 通知を追加:', task.title)
+            addNotification(
+              '締切が近づいています！',
+              `【${task.subject || '課題'}】${task.title} - 残り${Math.floor(diffHours)}時間`,
+              task.id
+            )
+            notifiedTasksRef.current.add(notificationKey)
+          }
         }
         
         // 期限切れ
+        const overdueKey = `${task.id}-overdue`
         if (diffHours < 0 && diffHours > -1) {
-          sendNotification(
-            '⚠️ 期限切れです！',
-            `【${task.subject || '課題'}】${task.title}`
-          )
+          if (!notifiedTasksRef.current.has(overdueKey)) {
+            console.log('⚠️ 期限切れ通知を追加:', task.title)
+            addNotification(
+              '⚠️ 期限切れです！',
+              `【${task.subject || '課題'}】${task.title}`,
+              task.id
+            )
+            notifiedTasksRef.current.add(overdueKey)
+          }
         }
       })
     }
 
-    // 初回チェック
-    checkDeadlines()
-    
-    // 1分ごとにチェック
-    const interval = setInterval(checkDeadlines, 60000)
-    
-    return () => clearInterval(interval)
+    if (tasks.length > 0) {
+      // 初回チェック
+      checkDeadlines()
+      
+      // 10秒ごとにチェック
+      const interval = setInterval(checkDeadlines, 10000)
+      
+      return () => clearInterval(interval)
+    }
   }, [tasks])
 
-  const requestNotificationPermission = async () => {
-    if ('Notification' in window) {
-      const permission = await Notification.requestPermission()
-      setNotificationPermission(permission)
-      
-      if (permission === 'granted') {
-        sendNotification('通知が有効になりました', '締切が近い課題をお知らせします')
-      }
+  const addNotification = (title: string, message: string, taskId: string) => {
+    const newNotification: Notification = {
+      id: `${taskId}-${Date.now()}`,
+      title,
+      message,
+      timestamp: new Date(),
+      read: false,
+      taskId,
+    }
+    
+    setNotifications(prev => [newNotification, ...prev])
+    
+    // ブラウザのネイティブ通知も送る（権限があれば）
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, { body: message })
     }
   }
 
-  const sendNotification = (title: string, body: string) => {
-    if ('Notification' in window && Notification.permission === 'granted') {
-      new Notification(title, {
-        body,
-        icon: '/icon.png', // アイコンは後で追加可能
-        badge: '/badge.png',
-      })
-    }
+  const markAsRead = (notificationId: string) => {
+    setNotifications(prev =>
+      prev.map(n => (n.id === notificationId ? { ...n, read: true } : n))
+    )
   }
+
+  const markAllAsRead = () => {
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })))
+  }
+
+  const deleteNotification = (notificationId: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== notificationId))
+  }
+
+  const unreadCount = notifications.filter(n => !n.read).length
 
   const fetchTasks = async () => {
     const { data: { user } } = await supabase.auth.getUser()
@@ -150,6 +189,9 @@ export default function DashboardPage() {
     if (error) {
       console.error('Error updating task:', error)
     } else {
+      // 完了にした課題の通知記録をクリア
+      notifiedTasksRef.current.delete(`${taskId}-warning`)
+      notifiedTasksRef.current.delete(`${taskId}-overdue`)
       fetchTasks()
     }
   }
@@ -165,6 +207,9 @@ export default function DashboardPage() {
     if (error) {
       console.error('Error deleting task:', error)
     } else {
+      // 削除した課題の通知記録をクリア
+      notifiedTasksRef.current.delete(`${taskId}-warning`)
+      notifiedTasksRef.current.delete(`${taskId}-overdue`)
       fetchTasks()
     }
   }
@@ -178,6 +223,21 @@ export default function DashboardPage() {
       hour: '2-digit',
       minute: '2-digit',
     })
+  }
+
+  const formatNotificationTime = (date: Date) => {
+    const now = new Date()
+    const diffMs = now.getTime() - date.getTime()
+    const diffMins = Math.floor(diffMs / 60000)
+    
+    if (diffMins < 1) return 'たった今'
+    if (diffMins < 60) return `${diffMins}分前`
+    
+    const diffHours = Math.floor(diffMins / 60)
+    if (diffHours < 24) return `${diffHours}時間前`
+    
+    const diffDays = Math.floor(diffHours / 24)
+    return `${diffDays}日前`
   }
 
   const isDeadlineNear = (deadline: string) => {
@@ -207,17 +267,78 @@ export default function DashboardPage() {
         <div className="max-w-7xl mx-auto px-4 py-4 sm:px-6 lg:px-8 flex justify-between items-center">
           <h1 className="text-2xl font-bold text-gray-900">課題管理システム</h1>
           <div className="flex items-center space-x-4">
-            {notificationPermission !== 'granted' && (
+            {/* 通知ベル */}
+            <div className="relative">
               <button
-                onClick={requestNotificationPermission}
-                className="px-4 py-2 text-sm bg-yellow-100 text-yellow-800 rounded-md hover:bg-yellow-200"
+                onClick={() => setShowNotifications(!showNotifications)}
+                className="relative p-2 text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-full"
               >
-                🔔 通知を有効化
+                🔔
+                {unreadCount > 0 && (
+                  <span className="absolute top-0 right-0 inline-flex items-center justify-center px-2 py-1 text-xs font-bold leading-none text-white bg-red-600 rounded-full">
+                    {unreadCount}
+                  </span>
+                )}
               </button>
-            )}
-            {notificationPermission === 'granted' && (
-              <span className="text-sm text-green-600">🔔 通知ON</span>
-            )}
+
+              {/* 通知ドロップダウン */}
+              {showNotifications && (
+                <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-lg border border-gray-200 z-50">
+                  <div className="p-4 border-b border-gray-200 flex justify-between items-center">
+                    <h3 className="font-semibold text-gray-900">通知</h3>
+                    {unreadCount > 0 && (
+                      <button
+                        onClick={markAllAsRead}
+                        className="text-xs text-blue-600 hover:text-blue-800"
+                      >
+                        すべて既読にする
+                      </button>
+                    )}
+                  </div>
+                  <div className="max-h-96 overflow-y-auto">
+                    {notifications.length === 0 ? (
+                      <div className="p-8 text-center text-gray-500 text-sm">
+                        通知はありません
+                      </div>
+                    ) : (
+                      notifications.map(notification => (
+                        <div
+                          key={notification.id}
+                          className={`p-4 border-b border-gray-100 hover:bg-gray-50 ${
+                            !notification.read ? 'bg-blue-50' : ''
+                          }`}
+                          onClick={() => markAsRead(notification.id)}
+                        >
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1">
+                              <h4 className="font-semibold text-sm text-gray-900">
+                                {notification.title}
+                              </h4>
+                              <p className="text-sm text-gray-600 mt-1">
+                                {notification.message}
+                              </p>
+                              <p className="text-xs text-gray-400 mt-1">
+                                {formatNotificationTime(notification.timestamp)}
+                              </p>
+                            </div>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                deleteNotification(notification.id)
+                              }}
+                              className="ml-2 text-gray-400 hover:text-red-600"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
             <button
               onClick={handleLogout}
               className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900"
@@ -227,6 +348,14 @@ export default function DashboardPage() {
           </div>
         </div>
       </header>
+
+      {/* 通知ドロップダウンの外側をクリックしたら閉じる */}
+      {showNotifications && (
+        <div
+          className="fixed inset-0 z-40"
+          onClick={() => setShowNotifications(false)}
+        />
+      )}
 
       <main className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
         <div className="mb-6 flex justify-between items-center">
@@ -318,7 +447,7 @@ export default function DashboardPage() {
 
       {/* 課題追加モーダル */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
             <h3 className="text-xl font-semibold mb-4">課題を追加</h3>
             <form onSubmit={handleAddTask} className="space-y-4">
