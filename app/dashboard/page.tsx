@@ -283,7 +283,7 @@ export default function DashboardPage() {
 
               {/* 通知ドロップダウン */}
               {showNotifications && (
-                <div className="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-lg border border-gray-200 z-50">
+                <div className="absolute right-0 sm:right-0 left-2 right-2 sm:left-auto mt-2 w-auto sm:w-80 max-w-[calc(100vw-1rem)] bg-white rounded-lg shadow-lg border border-gray-200 z-50">
                   <div className="p-4 border-b border-gray-200 flex justify-between items-center">
                     <h3 className="font-semibold text-gray-900">通知</h3>
                     {unreadCount > 0 && (
