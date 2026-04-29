@@ -131,10 +131,18 @@ export default function DashboardPage() {
 
   const fetchTasks = async () => {
     const { data: { session } } = await supabase.auth.getSession()
-    
+
     if (!session) {
-      router.push('/login')
-      return
+      // モバイルで復元が遅い場合に1回待って再確認
+      await new Promise(resolve => setTimeout(resolve, 800))
+    
+      const { data: { session: retrySession } } =
+        await supabase.auth.getSession()
+    
+      if (!retrySession) {
+        router.push('/login')
+        return
+      }
     }
 
     const { data, error } = await supabase
